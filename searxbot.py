@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Explicit ``/search QUERY`` routing around PyBot.
+"""Explicit and bounded natural-language search routing around PyBot.
 
 Standard library only. Lines starting with ``/search`` are answered by a SearXNG
-JSON query and never reach ``bot.runtime.turn``; every other line is passed to
-PyBot unchanged. A failed search reports the failure instead of falling through
+JSON query and never reach ``bot.runtime.turn``. Whole-message requests such as
+``search the web for QUERY`` use the same route; other lines go to PyBot
+unchanged. A failed search reports the failure instead of falling through
 to a conversational reply.
 
     python3 -m searxbot -p "/search SearXNG documentation"
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import importlib
 import json
 import math
 import os
@@ -31,7 +33,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8888"
 DEFAULT_TIMEOUT = 10.0
@@ -51,6 +53,12 @@ TIMEOUT = "timeout"
 MALFORMED = "malformed_payload"
 
 _COMMAND = re.compile(r"/search(?P<rest>(?=$|\s).*)\Z", re.IGNORECASE | re.DOTALL)
+_WEB_REQUEST = re.compile(
+    r"(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?"
+    r"search\s+(?:the\s+web|the\s+internet|online)"
+    r"(?:\s+for(?:\s+(?P<query>[^\r\n]+))?)?\s*\Z",
+    re.IGNORECASE,
+)
 
 
 class SearchError(Exception):
@@ -72,6 +80,21 @@ def parse_search_command(text):
         return None
     match = _COMMAND.match(text.strip())
     return match.group("rest").strip() if match else None
+
+
+def parse_search_request(text):
+    """Recognize /search or a bounded, whole-message web-search request.
+
+    Ordinary questions never trigger fallback search. Quoted requests and
+    negated prefixes do not match; this is a small grammar, not intent inference.
+    """
+    query = parse_search_command(text)
+    if query is not None or not isinstance(text, str):
+        return query
+    if "\n" in text or "\r" in text:
+        return None
+    match = _WEB_REQUEST.fullmatch(text.strip())
+    return (match.group("query") or "").strip() if match else None
 
 
 def resolve_base_url(base_url=None):
@@ -374,12 +397,16 @@ def _load_runtime():
     """Import PyBot's runtime from an importable ``bot`` package.
 
     When ``bot`` is not importable, fall back to the checkout named by
-    ``PYBOT_PATH``. Nothing here assumes a particular install location.
+    ``PYBOT_PATH``. Nothing here assumes a particular install location. A
+    checkout path that holds no ``bot`` package is a configuration mistake and
+    raises RuntimeError, which the CLI turns into exit 2; a dependency missing
+    *inside* PyBot keeps propagating, so a broken install is not misreported as
+    a wrong path.
     """
     try:
-        from bot import runtime
+        runtime = importlib.import_module("bot.runtime")
     except ModuleNotFoundError as error:
-        if error.name != "bot":
+        if error.name not in {"bot", "bot.runtime"}:
             raise
         path = os.environ.get("PYBOT_PATH")
         if not path:
@@ -387,7 +414,15 @@ def _load_runtime():
                 "PyBot is not importable. Put its `bot` package on PYTHONPATH, set PYBOT_PATH "
                 "to a PyBot checkout, or pass --pybot-path.") from error
         add_pybot_to_path(path)
-        from bot import runtime
+        try:
+            runtime = importlib.import_module("bot.runtime")
+        except ModuleNotFoundError as missing:
+            if missing.name not in {"bot", "bot.runtime"}:
+                raise
+            raise RuntimeError(
+                "No importable `bot.runtime` in the PyBot checkout at %s. Check the path, or "
+                "put a directory containing bot/ on PYTHONPATH."
+                % os.path.abspath(path)) from missing
     return runtime
 
 
@@ -396,13 +431,13 @@ def handle(text, memory, base_url=None, timeout=DEFAULT_TIMEOUT,
     """One routed turn.
 
     Returns ``{"reply", "source", "module", "candidates", "search", "error"}``.
-    ``source`` is "search" for ``/search`` lines and "pybot" for everything else.
+    ``source`` is "search" for recognized search requests, otherwise "pybot".
     Search turns never call PyBot and never write ``memory["turns"]``.
 
     ``runtime`` may be a PyBot runtime module, a callable returning one, or None
     to import it on demand. It is never imported for a search line.
     """
-    query = parse_search_command(text)
+    query = parse_search_request(text)
     if query is None:
         if callable(runtime):
             runtime = runtime()
@@ -421,6 +456,7 @@ def handle(text, memory, base_url=None, timeout=DEFAULT_TIMEOUT,
 
 HELP = """Commands:
   /search QUERY   ask SearXNG and show retrieved results
+  search the web for QUERY   also asks SearXNG (can/could/would you, please supported)
   /reset          start a new conversation (PyBot forgets what was said)
   /help           show this help
   /exit           quit (Ctrl+D works too)"""

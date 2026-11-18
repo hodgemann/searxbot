@@ -39,6 +39,10 @@ python3 -m searxbot --pybot-path ../pybot
 Enter `/search QUERY` for web results, an ordinary message for PyBot chat,
 `/reset` to clear the conversation, `/help` for commands, or `/exit` to leave.
 
+Whole-message requests also work, including `search the web for QUERY`,
+`search the internet for QUERY`, and `search online for QUERY`. The wording can
+include `please` or `can/could/would you`. Text after `for` is sent as the query.
+
 ## Command line
 
 | Option | Purpose |
@@ -97,5 +101,5 @@ to include PyBot chat integration tests.
 
 ## Releases and license
 
-Version 0.1.0. See [the changelog](CHANGELOG.md) for release history.
+Version 0.2.0. See [the changelog](CHANGELOG.md) for release history.
 SearxBot uses the [Apache License 2.0](LICENSE), the same license as PyBot.

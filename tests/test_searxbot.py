@@ -18,6 +18,7 @@ import random
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -112,6 +113,68 @@ class ParseSearchCommand(unittest.TestCase):
         for text in ("search cats", "/searchcats", "I /search cats", "hello", "", "/reset",
                      "what is my name?", None, 42):
             self.assertIsNone(adapter.parse_search_command(text), text)
+
+
+class NaturalSearchRouting(unittest.TestCase):
+    def test_clear_web_requests_preserve_the_query(self):
+        for text in ("search the web for café 東京", "Search online for café 東京",
+                     "please search the internet for café 東京",
+                     "Can you search the web for café 東京",
+                     "could you please search online for café 東京",
+                     "Please would you search the web for café 東京"):
+            self.assertEqual(adapter.parse_search_request(text), "café 東京", text)
+
+    def test_non_requests_stay_local(self):
+        for text in ("hello", "what is the latest news?", "search cats",
+                     "don't search the web for cats", "do not search online for cats",
+                     '"search the web for cats"', "I said search the web for cats",
+                     "how do I search the web for cats?", "can you search my files for cats",
+                     "search the web for cats\nDon't search",
+                     "please\nsearch online for cats", "search\rthe web for cats", None, 42):
+            self.assertIsNone(adapter.parse_search_request(text), text)
+
+    def test_bare_web_request_reports_missing_query_without_http(self):
+        for text in ("search the web", "please search online for"):
+            opener = FakeOpener()
+            result = adapter.handle(text, {}, opener=opener)
+            self.assertEqual(result["error"]["kind"], adapter.EMPTY_QUERY)
+            self.assertEqual(opener.urls, [])
+
+    def test_web_request_dispatches_once_without_calling_pybot(self):
+        def forbidden_runtime():
+            self.fail("web requests must bypass PyBot arbitration")
+        opener = FakeOpener(FakeResponse(payload()))
+        memory = {"turns": [{"user": "hello", "bot": "hi"}]}
+        before = list(memory["turns"])
+        result = adapter.handle("could you search online for café 東京", memory,
+                                opener=opener, runtime=forbidden_runtime)
+        self.assertEqual(result["source"], "search")
+        self.assertIsNone(result["error"])
+        self.assertEqual(len(opener.urls), 1)
+        self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(opener.urls[0]).query)["q"],
+                         ["café 東京"])
+        self.assertEqual(memory["turns"], before)
+
+    def test_ordinary_question_does_not_search(self):
+        class Runtime:
+            def turn(self, text, memory):
+                return {"reply": "local answer", "module": "fixture", "candidates": []}
+        opener = FakeOpener()
+        result = adapter.handle("what is the latest news?", {}, opener=opener, runtime=Runtime())
+        self.assertEqual(result["source"], "pybot")
+        self.assertEqual(opener.urls, [])
+
+    def test_natural_search_failure_does_not_fall_back_to_chat(self):
+        def forbidden_runtime():
+            self.fail("a failed search must not fall back to chat")
+        result = adapter.handle("search online for cats", {},
+                                opener=FakeOpener(error=urllib.error.URLError("fixture")),
+                                runtime=forbidden_runtime)
+        self.assertEqual(result["source"], "search")
+        self.assertEqual(result["error"]["kind"], adapter.UNREACHABLE)
+
+    def test_query_punctuation_is_preserved(self):
+        self.assertEqual(adapter.parse_search_request("can you search online for C++?"), "C++?")
 
 
 class EndpointConstruction(unittest.TestCase):
@@ -604,6 +667,47 @@ class CommandLineInterface(unittest.TestCase):
         result = self.run_cli("-p", "hello", with_pybot=False)
         self.assertEqual(result.returncode, 2)
         self.assertIn("PyBot is not importable", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_pybot_path_that_does_not_exist_exits_2_without_a_traceback(self):
+        """--pybot-path is applied before retrying, so a typo is a config error."""
+        self.require_pybot_absent()
+        with tempfile.TemporaryDirectory() as parent:
+            missing = os.path.join(parent, "no-such-checkout")
+            result = self.run_cli("-p", "hello", "--pybot-path", missing, with_pybot=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(missing, result.stderr)
+        self.assertIn("bot", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_pybot_path_without_a_bot_package_exits_2_without_a_traceback(self):
+        """An existing directory that is not a PyBot checkout is reported the same way."""
+        self.require_pybot_absent()
+        with tempfile.TemporaryDirectory() as checkout:
+            result = self.run_cli("-p", "hello", "--pybot-path", checkout, with_pybot=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(checkout, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_dependency_missing_inside_pybot_is_not_reported_as_a_bad_path(self):
+        """A broken PyBot install keeps its own ImportError instead of exit 2."""
+        self.require_pybot_absent()
+        with tempfile.TemporaryDirectory() as checkout:
+            package = os.path.join(checkout, "bot")
+            os.makedirs(package)
+            with open(os.path.join(package, "__init__.py"), "w", encoding="utf-8") as init_file:
+                init_file.write("import searxbot_fixture_missing_dependency\n")
+            result = self.run_cli("-p", "hello", "--pybot-path", checkout, with_pybot=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("searxbot_fixture_missing_dependency", result.stderr)
+        self.assertIn("Traceback", result.stderr)
+
+    def test_pybot_directory_without_runtime_is_a_configuration_error(self):
+        self.require_pybot_absent()
+        with tempfile.TemporaryDirectory() as checkout:
+            os.makedirs(os.path.join(checkout, "bot"))
+            result = self.run_cli("-p", "hello", "--pybot-path", checkout, with_pybot=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
     def closed_port(self):

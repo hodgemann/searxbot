@@ -16,4 +16,4 @@ dependencies = []
 searxbot = "searxbot:main"
 
 [tool.flit.sdist]
-include = ['CHANGELOG.md', 'requirements.txt', 'tests/']
+include = ['CHANGELOG.md', 'requirements.txt', 'tests/', 'pybot_search.py']
