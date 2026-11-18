@@ -1,0 +1,2 @@
+# SearxBot has no third-party Python runtime dependencies.
+# For optional PyBot chat and the SearXNG service, see README.md.
