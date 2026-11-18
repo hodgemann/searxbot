@@ -6,6 +6,10 @@ During `0.x`, bump the minor version for functionality changes and the patch
 version for compatible fixes. Once the public API is stable at `1.0.0`, use a
 major bump for incompatible changes.
 
+## v0.4.0
+
+Add `start.sh` for running from any directory, with a sibling PyBot checkout as the default.
+
 ## v0.3.0
 
 Add `/results` and `/result N` with bounded natural-language recall.

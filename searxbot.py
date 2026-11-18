@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8888"
 DEFAULT_TIMEOUT = 10.0

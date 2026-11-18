@@ -43,6 +43,11 @@ Whole-message requests also work, including `search the web for QUERY`,
 `search the internet for QUERY`, and `search online for QUERY`. The wording can
 include `please` or `can/could/would you`. Text after `for` is sent as the query.
 
+On systems with Bash, `./start.sh` launches SearxBot from a checkout. Run it by
+absolute path from another directory. It looks for a sibling `pybot` checkout
+by default. Set `PYBOT_PATH` or pass `--pybot-path` to use a different checkout.
+The script forwards the other CLI options.
+
 ## Recall results
 
 In the same interactive session, try these commands in order.
@@ -123,5 +128,5 @@ to include PyBot chat integration tests.
 
 ## Releases and license
 
-Version 0.3.0. See [the changelog](CHANGELOG.md) for release history.
+Version 0.4.0. See [the changelog](CHANGELOG.md) for release history.
 SearxBot uses the [Apache License 2.0](LICENSE), the same license as PyBot.
