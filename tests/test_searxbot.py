@@ -505,9 +505,168 @@ class Routing(unittest.TestCase):
 
     def test_search_does_not_write_runtime_owned_turns(self):
         memory = {"turns": [{"user": "hi", "bot": "Hello!", "module": "greeting"}]}
-        before = json.dumps(memory)
+        before = json.dumps(memory["turns"])
         adapter.handle("/search cats", memory, opener=FakeOpener(FakeResponse(payload())))
-        self.assertEqual(json.dumps(memory), before)
+        self.assertEqual(json.dumps(memory["turns"]), before)
+
+
+class SearchFollowups(unittest.TestCase):
+    def setUp(self):
+        self.memory = {}
+        self.opener = FakeOpener(FakeResponse(payload()))
+        self.first = adapter.handle("/search cats", self.memory, opener=self.opener)
+
+    def recall(self, text, memory=None):
+        def forbidden_runtime():
+            self.fail("follow-ups must not load PyBot")
+        result = adapter.handle(text, self.memory if memory is None else memory,
+                                opener=self.opener, runtime=forbidden_runtime)
+        self.assertEqual(result["source"], "search_context")
+        self.assertEqual(len(self.opener.urls), 1, "recall must not retrieve again")
+        return result
+
+    def test_second_result_uses_display_order_and_full_snippet(self):
+        result = self.recall("open the second one")
+        self.assertIsNone(result["error"])
+        self.assertIn("https://example.com/wiki/Cat", result["reply"])
+        self.assertIn("The domestic cat.", result["reply"])
+        self.assertIn("page not fetched", result["reply"])
+        self.assertIn(self.first["search"]["retrieved_at"], result["reply"])
+        self.assertNotIn("turns", self.memory)
+
+    def test_repeat_lists_original_query_and_timestamp(self):
+        for text in ("/results", "show the results again", "repeat the results",
+                     "what did I search for?"):
+            result = self.recall(text)
+            self.assertIsNone(result["error"])
+            self.assertIn('Search results for "cats"', result["reply"])
+            self.assertEqual(result["search"], self.first["search"])
+
+    def test_command_and_bounded_natural_selectors(self):
+        for text in ("/result 2", "  /RESULT 02 ", "show me the second result",
+                     "please open the second one.", "show 2"):
+            result = self.recall(text)
+            self.assertIn("https://example.com/wiki/Cat", result["reply"], text)
+
+    def test_invalid_explicit_selectors_report_errors(self):
+        for text in ("/result", "/result 0", "/result -1", "/result 3", "/result two",
+                     "/result 1.5", "/result " + "9" * 5000):
+            self.assertEqual(self.recall(text)["error"]["kind"], "invalid_result")
+        self.assertIsNone(self.recall("/result 1")["error"])
+
+    def test_new_conversation_has_no_context(self):
+        for text in ("/results", "show the second one"):
+            result = self.recall(text, {})
+            self.assertEqual(result["error"]["kind"], "no_search_context")
+            self.assertIsNone(result["search"])
+
+    def test_interleaved_conversations_keep_their_own_results(self):
+        other = {}
+        adapter.handle("/search dogs", other,
+                       opener=FakeOpener(FakeResponse(payload(results=[
+                           {"title": "Dogs", "url": "https://example.org/dogs"}]))))
+        self.assertIn("https://example.org/dogs", self.recall("/result 1", other)["reply"])
+        self.assertIn("https://example.org/cats", self.recall("/result 1")["reply"])
+        other.clear()
+        self.assertIsNone(self.recall("/result 2")["error"])
+
+    def test_recall_keeps_full_returned_snippet_and_handles_missing_one(self):
+        snippet = "x" * (adapter.MAX_SNIPPET_CHARS + 50) + " END"
+        adapter.handle("/search snippets", self.memory,
+                       opener=FakeOpener(FakeResponse(payload(results=[
+                           {"title": "Long", "url": "https://example.org/long", "content": snippet},
+                           {"title": "Empty", "url": "https://example.org/empty"}]))))
+        self.assertIn(snippet, self.recall("/result 1")["reply"])
+        self.assertIn("No snippet was returned.", self.recall("/result 2")["reply"])
+
+    def test_reset_by_clearing_conversation_forgets_results(self):
+        self.memory.clear()
+        self.assertEqual(self.recall("/results")["error"]["kind"], "no_search_context")
+
+    def test_new_search_replaces_previous_list(self):
+        adapter.handle("search online for dogs", self.memory,
+                       opener=FakeOpener(FakeResponse(payload(results=[
+                           {"title": "Dogs", "url": "https://example.org/dogs"}]))))
+        result = self.recall("/result 1")
+        self.assertEqual(result["search"]["query"], "dogs")
+        self.assertIn("https://example.org/dogs", result["reply"])
+        self.assertNotIn("https://example.org/cats", result["reply"])
+
+    def test_failed_new_search_invalidates_old_context(self):
+        for text, opener in (("/search dogs", FakeOpener(error=urllib.error.URLError("fixture"))),
+                             ("/search", FakeOpener())):
+            adapter.handle(text, self.memory, opener=opener)
+            self.assertEqual(self.recall("/results")["error"]["kind"], "no_search_context")
+
+    def test_empty_search_replaces_old_context(self):
+        adapter.handle("/search empty", self.memory,
+                       opener=FakeOpener(FakeResponse(payload(results=[]))))
+        self.assertIn("no results", self.recall("/results")["reply"])
+        self.assertEqual(self.recall("/result 1")["error"]["kind"], "invalid_result")
+
+    def test_returned_records_cannot_mutate_snapshot(self):
+        self.first["search"]["results"][0]["title"] = "mutated"
+        recalled = self.recall("/results")
+        self.assertNotIn("mutated", recalled["reply"])
+        recalled["search"]["results"].clear()
+        self.assertIsNone(self.recall("/result 2")["error"])
+
+    def test_context_survives_chat_and_stays_out_of_hooks(self):
+        class Runtime:
+            def turn(inner, text, memory):
+                self.assertNotIn(adapter.SEARCH_CONTEXT_KEY, memory)
+                memory.clear()
+                memory["turns"] = [{"user": text, "bot": "hi"}]
+                return {"reply": "hi"}
+        adapter.handle("hello", self.memory, opener=self.opener, runtime=Runtime())
+        turns = list(self.memory["turns"])
+        self.assertIsNone(self.recall("/result 2")["error"])
+        self.assertEqual(self.memory["turns"], turns)
+
+    def test_runtime_exception_preserves_context(self):
+        class Runtime:
+            def turn(inner, text, memory):
+                memory.clear()
+                raise ValueError("fixture")
+        with self.assertRaises(ValueError):
+            adapter.handle("hello", self.memory, runtime=Runtime())
+        self.assertIsNone(self.recall("/result 1")["error"])
+
+    def test_negated_quoted_multiline_and_unsupported_phrases_stay_local(self):
+        for text in ("don't open the second one", '"open the second one"',
+                     "I said show the second one", "show the second one\nplease",
+                     "tell me about it", "/results extra", "open the first file", "open result 2", None, 42):
+            self.assertIsNone(adapter.parse_search_followup(text), text)
+
+    def test_selection_after_deduplication_matches_display(self):
+        adapter.handle("/search ordered", self.memory,
+                       opener=FakeOpener(FakeResponse(payload(results=[
+                           {"title": "Missing URL"},
+                           {"title": "First", "url": "https://example.org/1"},
+                           {"title": "Duplicate", "url": "https://example.org/1"},
+                           {"title": "Second", "url": "https://example.org/2"}]))))
+        self.assertIn("https://example.org/2", self.recall("/result 2")["reply"])
+
+    def test_multidigit_result_numbers_and_ordinal_boundary(self):
+        adapter.handle("/search many", self.memory, max_results=12,
+                       opener=FakeOpener(FakeResponse(payload(results=[
+                           {"title": str(i), "url": "https://example.org/%d" % i}
+                           for i in range(1, 13)]))))
+        for text in ("/result 12", "/result 0012", "show 12"):
+            self.assertIn("https://example.org/12", self.recall(text)["reply"])
+        self.assertEqual(self.recall("/result 13")["error"]["kind"], "invalid_result")
+        self.assertIn("https://example.org/5", self.recall("show the fifth one")["reply"])
+        self.assertIsNone(adapter.parse_search_followup("show the sixth one"))
+
+    def test_repeat_preserves_retrieval_notes(self):
+        record = adapter.handle("/search notes", self.memory, max_results=1,
+                                opener=FakeOpener(FakeResponse(payload(
+                                    answers=["Answer card fixture"], suggestions=["Suggestion fixture"],
+                                    unresponsive_engines=[["fixture-engine", "timeout"]]))))
+        result = self.recall("/results")
+        self.assertEqual(result["reply"], "Remembered results (no new search):\n" + record["reply"])
+        for text in ("Answer card fixture", "Suggestion fixture", "fixture-engine", "showing 1 of 2"):
+            self.assertIn(text, result["reply"])
 
 
 class LocalFixtureServer(unittest.TestCase):
@@ -737,6 +896,27 @@ class CommandLineInterface(unittest.TestCase):
         self.assertEqual(record["search"]["results"][0]["url"], "https://example.org/cli")
         self.assertIsNone(record["error"])
 
+    def test_interactive_recall_and_reset_without_pybot(self):
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        env.pop("PYBOT_PATH", None)
+        result = subprocess.run(
+            [sys.executable, "-B", "-I", os.path.join(ROOT, "searxbot.py"),
+             "--base-url", "http://127.0.0.1:%d" % self.server.server_address[1]],
+            input="/search cats\n/result 1\nshow the first one\n/reset\n/results\n/exit\n",
+            capture_output=True, text=True, timeout=60, env=env, cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Remembered result 1 for "cats"', result.stdout)
+        self.assertIn("https://example.org/cli", result.stdout)
+        self.assertIn("New conversation.", result.stdout)
+        self.assertIn("no_search_context", result.stdout)
+        self.assertNotIn("Loading PyBot", result.stderr)
+
+    def test_one_shot_recall_without_context_exits_one(self):
+        result = self.run_cli("-p", "/result 1", "--json", with_pybot=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["error"]["kind"], "no_search_context")
+        self.assertNotIn("Loading PyBot", result.stderr)
+
     @unittest.skipIf(PYBOT_PATH is None, "set PYBOT_PATH to test the chat path")
     def test_one_shot_chat_reply_comes_from_a_pybot_module(self):
         result = self.run_cli("-p", "hello", "-v")
@@ -752,6 +932,18 @@ class PyBotIntegration(unittest.TestCase):
     """Normal chat must keep working through the adapter."""
 
     runtime = PYBOT_RUNTIME
+
+    def test_search_context_survives_real_pybot_turn(self):
+        random.seed(0)
+        memory = {}
+        adapter.handle("/search cats", memory, opener=FakeOpener(FakeResponse(payload())))
+        adapter.handle("hi, my name is Sam", memory, runtime=self.runtime)
+        result = adapter.handle("show the second one", memory)
+        self.assertEqual(result["source"], "search_context")
+        self.assertIn("https://example.com/wiki/Cat", result["reply"])
+        answer = adapter.handle("what is my name?", memory, runtime=self.runtime)
+        self.assertIn("Sam", answer["reply"])
+        self.assertEqual(len(memory["turns"]), 2)
 
     def test_plain_chat_still_works_through_the_adapter(self):
         random.seed(0)

@@ -3,8 +3,8 @@
 
 Standard library only. Lines starting with ``/search`` are answered by a SearXNG
 JSON query and never reach ``bot.runtime.turn``. Whole-message requests such as
-``search the web for QUERY`` use the same route; other lines go to PyBot
-unchanged. A failed search reports the failure instead of falling through
+``search the web for QUERY`` use the same route. Bounded follow-ups recall
+stored results; other lines go to PyBot unchanged. A failed search reports the failure instead of falling through
 to a conversational reply.
 
     python3 -m searxbot -p "/search SearXNG documentation"
@@ -18,6 +18,7 @@ not the total transfer, so a server that dribbles bytes can take longer.
 from __future__ import annotations
 
 import argparse
+import copy
 import http.client
 import importlib
 import json
@@ -33,7 +34,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8888"
 DEFAULT_TIMEOUT = 10.0
@@ -42,6 +43,7 @@ MAX_SNIPPET_CHARS = 300
 MAX_RESPONSE_BYTES = 2_000_000
 USER_AGENT = "SearxBot/" + __version__
 COMMAND_PREFIX = "/search"
+SEARCH_CONTEXT_KEY = "_search_adapter_context"
 
 # Kept in sync with the error kinds the tests assert on.
 EMPTY_QUERY = "empty_query"
@@ -100,6 +102,63 @@ def parse_search_request(text):
 def resolve_base_url(base_url=None):
     """The configured SearXNG origin: explicit argument, then ``$SEARXNG_URL``, then the default."""
     return (base_url or os.environ.get("SEARXNG_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
+def parse_search_followup(text):
+    """Return ('list', '') or ('result', selector), otherwise None.
+
+    Match whole lines only. Explicit commands report bad selectors locally;
+    unsupported natural phrases remain ordinary chat.
+    """
+    if not isinstance(text, str) or "\r" in text or "\n" in text:
+        return None
+    text = text.strip().lower()
+    if text in ("/results", "show the results again", "repeat the results",
+                "show search results", "what did i search for?", "what did i search for"):
+        return ("list", "")
+    command = re.fullmatch(r"/result(?:\s+(.*))?", text)
+    if command:
+        return ("result", command.group(1) or "")
+    match = re.fullmatch(
+        r"(?:please )?(?:show|open) (?:me )?(?:the )?"
+        r"(first|second|third|fourth|fifth|[0-9]+)(?: one| result)?[.!?]?", text)
+    if match:
+        selector = match.group(1)
+        words = {"first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5"}
+        return ("result", words.get(selector, selector))
+    return None
+
+
+def recall_search(request, memory):
+    """Read the last search snapshot without retrieval or PyBot hooks."""
+    record = memory.get(SEARCH_CONTEXT_KEY)
+    error = None
+    if record is None:
+        error = {"kind": "no_search_context",
+                 "message": "No remembered search in this conversation. Use /search QUERY first."}
+    elif request[0] == "list":
+        reply = "Remembered results (no new search):\n" + format_results(record)
+    else:
+        selector = request[1]
+        # Bound conversion by the number of stored results, including huge inputs.
+        digits = selector.lstrip("0") or "0"
+        count = len(record["results"])
+        index = int(digits) if re.fullmatch(r"[0-9]+", digits) and len(digits) <= len(str(count)) else 0
+        if not 1 <= index <= count:
+            error = {"kind": "invalid_result",
+                     "message": "Use /result N with a number from 1 to %d in the remembered list." % count
+                     if count else "The remembered search has no results. Use /search QUERY to search again."}
+        else:
+            item = record["results"][index - 1]
+            reply = ('Remembered result %d for "%s" — SearXNG, %s\n'
+                     '%s\n%s\n%s\n'
+                     'Stored search snippet; page not fetched. Link shown only; no browser opened.'
+                     % (index, record["query"], record["retrieved_at"], item["title"],
+                        item["url"], item["snippet"] or "No snippet was returned."))
+    if error:
+        reply = "Search follow-up failed (%s): %s" % (error["kind"], error["message"])
+    return {"reply": reply, "source": "search_context", "module": None,
+            "candidates": [], "search": copy.deepcopy(record), "error": error}
 
 
 def redact_url(url):
@@ -431,25 +490,38 @@ def handle(text, memory, base_url=None, timeout=DEFAULT_TIMEOUT,
     """One routed turn.
 
     Returns ``{"reply", "source", "module", "candidates", "search", "error"}``.
-    ``source`` is "search" for recognized search requests, otherwise "pybot".
-    Search turns never call PyBot and never write ``memory["turns"]``.
+    ``source`` is "search", "search_context", or "pybot".
+    Search and recall turns never call PyBot or write ``memory["turns"]``.
 
     ``runtime`` may be a PyBot runtime module, a callable returning one, or None
     to import it on demand. It is never imported for a search line.
     """
     query = parse_search_request(text)
     if query is None:
+        followup = parse_search_followup(text)
+        if followup is not None:
+            return recall_search(followup, memory)
         if callable(runtime):
             runtime = runtime()
         runtime = runtime or _load_runtime()
-        result = runtime.turn(text, memory)
+        # Adapter state stays outside speculative hooks and runtime memory copying.
+        context = memory.pop(SEARCH_CONTEXT_KEY, None)
+        try:
+            result = runtime.turn(text, memory)
+        finally:
+            memory.pop(SEARCH_CONTEXT_KEY, None)
+            if context is not None:
+                memory[SEARCH_CONTEXT_KEY] = context
         return {"reply": result["reply"], "source": "pybot", "module": result.get("module"),
                 "candidates": result.get("candidates", []), "search": None, "error": None}
+    # A failed new request must not silently leave an older list as its referent.
+    memory.pop(SEARCH_CONTEXT_KEY, None)
     try:
         record = search(query, base_url, timeout, max_results, page, opener)
     except SearchError as error:
         return {"reply": format_error(error), "source": "search", "module": None,
                 "candidates": [], "search": None, "error": {"kind": error.kind, "message": error.message}}
+    memory[SEARCH_CONTEXT_KEY] = copy.deepcopy(record)
     return {"reply": format_results(record), "source": "search", "module": None,
             "candidates": [], "search": record, "error": None}
 
@@ -457,7 +529,9 @@ def handle(text, memory, base_url=None, timeout=DEFAULT_TIMEOUT,
 HELP = """Commands:
   /search QUERY   ask SearXNG and show retrieved results
   search the web for QUERY   also asks SearXNG (can/could/would you, please supported)
-  /reset          start a new conversation (PyBot forgets what was said)
+  /results        show the remembered search and results again
+  /result N       show a stored title, link and snippet (also: show/open the second one)
+  /reset          forget chat and search context
   /help           show this help
   /exit           quit (Ctrl+D works too)"""
 
@@ -466,7 +540,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="searxbot",
         description="Chat with PyBot, with explicit /search QUERY routed to SearXNG.",
-        epilog="Exit status: 0 = handled, 1 = a one-shot search failed, "
+        epilog="Exit status: 0 = handled, 1 = a one-shot search or recall failed, "
                "2 = PyBot is not importable.")
     parser.add_argument("--version", action="version", version="%(prog)s " + __version__)
     parser.add_argument("-p", "--prompt", metavar="TEXT", help="handle this one line and exit")

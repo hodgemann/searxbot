@@ -6,6 +6,11 @@ During `0.x`, bump the minor version for functionality changes and the patch
 version for compatible fixes. Once the public API is stable at `1.0.0`, use a
 major bump for incompatible changes.
 
+## v0.3.0
+
+Add `/results` and `/result N` with bounded natural-language recall.
+Keep the last search in conversation memory and clear it on reset.
+
 ## v0.2.0
 
 Recognize bounded whole-message requests and add the `pybot_search.py` launcher.

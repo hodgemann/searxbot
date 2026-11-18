@@ -43,6 +43,28 @@ Whole-message requests also work, including `search the web for QUERY`,
 `search the internet for QUERY`, and `search online for QUERY`. The wording can
 include `please` or `can/could/would you`. Text after `for` is sent as the query.
 
+## Recall results
+
+In the same interactive session, try these commands in order.
+
+```text
+/search Python pathlib documentation
+show the second one
+/result 1
+/results
+what did I search for?
+/reset
+```
+
+`/results` repeats the list and `/result N` displays the stored title, link, and
+full snippet for that number. Phrases like `show the second one` and
+`open the second one` display the stored result. Word ordinals go from first
+through fifth. Numeric selectors work for all results in the list.
+
+Recall uses the original retrieval and its timestamp. Each new search replaces
+the remembered results, and a failed search clears them. `/reset` clears both
+chat and search memory. Each CLI process starts with a fresh conversation.
+
 ## Command line
 
 | Option | Purpose |
@@ -59,7 +81,7 @@ include `please` or `can/could/would you`. Text after `for` is sent as the query
 | `--page N` | Request a SearXNG result page, default 1 |
 | `--version` | Print the installed or checkout version |
 
-One-shot exit codes are 0 for a handled turn, 1 for a failed search,
+One-shot exit codes are 0 for a handled turn, 1 for a failed search or recall,
 and 2 for a PyBot import configuration error or invalid CLI arguments. Search
 errors are printed to standard output. Requests bypass environment HTTP proxy
 settings. The timeout applies to each socket operation. Responses over
@@ -80,7 +102,7 @@ conversation. Serialize PyBot calls across conversations because the runtime
 uses process-wide state. Make PyBot importable or pass its runtime as
 `runtime=pybot_runtime`. The returned record has `reply`, `source`, `module`,
 `candidates`, `search`, and `error` fields.
-`source` can be "search" or "pybot". `search` holds retrieval metadata and
+`source` can be "search", "search_context", or "pybot". `search` holds retrieval metadata and
 results when available. A handled search
 failure has an `error` dictionary with `kind` and `message`. The lower-level
 `search()` function raises `SearchError` for those failures.
@@ -101,5 +123,5 @@ to include PyBot chat integration tests.
 
 ## Releases and license
 
-Version 0.2.0. See [the changelog](CHANGELOG.md) for release history.
+Version 0.3.0. See [the changelog](CHANGELOG.md) for release history.
 SearxBot uses the [Apache License 2.0](LICENSE), the same license as PyBot.
