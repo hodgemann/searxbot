@@ -6,6 +6,11 @@ During `0.x`, bump the minor version for functionality changes and the patch
 version for compatible fixes. Once the public API is stable at `1.0.0`, use a
 major bump for incompatible changes.
 
+## v0.4.1
+
+Rewrite the README in plainer language, with tables for chat commands and the
+`handle()` result. No code changes.
+
 ## v0.4.0
 
 Add `start.sh` for running from any directory, with a sibling PyBot checkout as the default.

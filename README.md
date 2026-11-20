@@ -1,56 +1,79 @@
 # SearxBot
 
-SearxBot connects a terminal or Python application to SearXNG. It displays
-titles, links, and snippets for explicit search requests and can route ordinary
-messages to PyBot for rule-based chat.
-[SearXNG](https://docs.searxng.org/) ·
-[Hugging Face PyBot](https://github.com/huggingface/pybot)
+SearxBot is a small terminal chat program that can search the web. Type a
+search request and it asks your own [SearXNG](https://docs.searxng.org/)
+server, then shows the titles, links, and short snippets it gets back. Anything
+else you type goes to [PyBot](https://github.com/huggingface/pybot), a simple
+rule-based chatbot, so you can talk to it normally between searches.
 
-## Requirements
+You can also use SearxBot from your own Python code.
 
-- Python 3.8 or newer. SearxBot uses the standard library at runtime.
-- A reachable SearXNG instance with `json` included in `search.formats` in its
-  settings. The default URL is `http://127.0.0.1:8888`. A 403 can indicate a
-  disabled output format or another server access policy.
-  [SearXNG Search API](https://docs.searxng.org/dev/search_api.html)
-- PyBot for ordinary chat. It is loaded on the first chat turn.
-  [Tested PyBot revision `7d63c7f`](https://github.com/huggingface/pybot/tree/7d63c7fbebb44c7e466e5c8b5c1f341ab767929e)
+## What you need
 
-## Run from a checkout
+- **Python 3.8 or newer.** SearxBot has no other Python dependencies.
+- **A running SearXNG server** with JSON output turned on. In SearXNG's
+  `settings.yml`, make sure `json` is listed under `search.formats`.
+  SearxBot looks for SearXNG at `http://127.0.0.1:8888` unless you tell it
+  otherwise. If you get a "403" error, JSON output is usually what is missing.
+  See the [SearXNG Search API docs](https://docs.searxng.org/dev/search_api.html).
+- **PyBot (optional),** for ordinary chat. Searching works without it. SearxBot
+  was tested with PyBot revision
+  [`7d63c7f`](https://github.com/huggingface/pybot/tree/7d63c7fbebb44c7e466e5c8b5c1f341ab767929e).
+
+## Quick start
+
+From the SearxBot folder, run a single search:
 
 ```sh
-python3 -m searxbot --version
 python3 -m searxbot -p '/search SearXNG documentation'
+```
+
+If your SearXNG server is somewhere else, point SearxBot at it:
+
+```sh
 python3 -m searxbot --base-url http://localhost:8888 -p '/search Python pathlib'
 ```
 
-To install the `searxbot` command from the repository, run `python3 -m pip install .`
-in your Python environment. From a checkout, `python3 -m searxbot` works directly.
+You can also set the `SEARXNG_URL` environment variable instead.
 
-## Chat with PyBot
+To install a `searxbot` command, run `python3 -m pip install .` in the SearxBot
+folder.
 
-Clone PyBot separately and pass its checkout directory.
+## Chatting
+
+To chat as well as search, download PyBot next to SearxBot and start a session:
 
 ```sh
 git clone https://github.com/huggingface/pybot.git ../pybot
 python3 -m searxbot --pybot-path ../pybot
 ```
 
-Enter `/search QUERY` for web results, an ordinary message for PyBot chat,
-`/reset` to clear the conversation, `/help` for commands, or `/exit` to leave.
+On Linux or macOS, `./start.sh` does the same thing. It expects PyBot in a
+`pybot` folder next to the SearxBot folder. Set `PYBOT_PATH` or pass
+`--pybot-path` to use a different location. Any other options are passed
+along, and the script works from any directory if you call it by its full path.
 
-Whole-message requests also work, including `search the web for QUERY`,
-`search the internet for QUERY`, and `search online for QUERY`. The wording can
-include `please` or `can/could/would you`. Text after `for` is sent as the query.
+Once it is running, you can type:
 
-On systems with Bash, `./start.sh` launches SearxBot from a checkout. Run it by
-absolute path from another directory. It looks for a sibling `pybot` checkout
-by default. Set `PYBOT_PATH` or pass `--pybot-path` to use a different checkout.
-The script forwards the other CLI options.
+| You type | What happens |
+| --- | --- |
+| `/search QUERY` | Searches the web for QUERY |
+| `search the web for QUERY` | Same as `/search` |
+| Anything else | PyBot answers |
+| `/results` | Shows the last search results again |
+| `/result 2` | Shows result number 2 in full |
+| `/reset` | Forgets the conversation and the last search |
+| `/help` | Lists the commands |
+| `/exit` or Ctrl+D | Quits |
 
-## Recall results
+Plain-English requests work too, as long as they are the whole message. For
+example: `search the internet for cheap flights`, `search online for pasta
+recipes`, or `could you please search the web for local weather`. Everything
+after "for" becomes the search.
 
-In the same interactive session, try these commands in order.
+### Going back to earlier results
+
+SearxBot remembers your most recent search, so you can ask about it:
 
 ```text
 /search Python pathlib documentation
@@ -58,41 +81,47 @@ show the second one
 /result 1
 /results
 what did I search for?
-/reset
 ```
 
-`/results` repeats the list and `/result N` displays the stored title, link, and
-full snippet for that number. Phrases like `show the second one` and
-`open the second one` display the stored result. Word ordinals go from first
-through fifth. Numeric selectors work for all results in the list.
+You can say things like `show the second one` or `open the third one` (first
+through fifth), or use `/result N` for any number in the list.
 
-Recall uses the original retrieval and its timestamp. Each new search replaces
-the remembered results, and a failed search clears them. `/reset` clears both
-chat and search memory. Each CLI process starts with a fresh conversation.
+A few things to know:
 
-## Command line
+- Only the latest search is remembered. A new search replaces it, and a failed
+  search clears it.
+- Results are shown as they were when you searched. They are not fetched again.
+- `/reset` clears everything, and each new run of SearxBot starts fresh.
 
-| Option | Purpose |
+## Command-line options
+
+| Option | What it does |
 | --- | --- |
-| `-p`, `--prompt TEXT` | Handle one line and exit |
-| `-i`, `--interactive` | Stay in chat after `-p` |
-| `-s`, `--seed N` | Seed PyBot's wording choices |
-| `-v`, `--verbose` | Show routing source, winning PyBot module, and timing |
-| `--json` | Print a structured record for each handled turn |
-| `--base-url URL` | Set the SearXNG base URL, overriding `SEARXNG_URL` |
-| `--pybot-path DIR` | Set the PyBot checkout path, overriding `PYBOT_PATH` |
-| `--timeout SECONDS` | Set the socket-operation timeout, default 10 seconds |
-| `--max-results N` | Cap results after dropping duplicates, default 5 |
-| `--page N` | Request a SearXNG result page, default 1 |
-| `--version` | Print the installed or checkout version |
+| `-p`, `--prompt TEXT` | Handle one message and exit |
+| `-i`, `--interactive` | Keep chatting after the `-p` message |
+| `-s`, `--seed N` | Make PyBot's replies repeatable |
+| `-v`, `--verbose` | Show where each reply came from and how long it took |
+| `--json` | Print each reply as JSON instead of text |
+| `--base-url URL` | SearXNG address (overrides `SEARXNG_URL`) |
+| `--pybot-path DIR` | PyBot folder (overrides `PYBOT_PATH`) |
+| `--timeout SECONDS` | Network timeout, 10 seconds by default |
+| `--max-results N` | Show at most N results, 5 by default |
+| `--page N` | Which page of results to fetch, 1 by default |
+| `--version` | Print the version number |
 
-One-shot exit codes are 0 for a handled turn, 1 for a failed search or recall,
-and 2 for a PyBot import configuration error or invalid CLI arguments. Search
-errors are printed to standard output. Requests bypass environment HTTP proxy
-settings. The timeout applies to each socket operation. Responses over
-2,000,000 bytes are rejected.
+When you use `-p`, the exit code tells you how it went: **0** means success,
+**1** means the search (or result lookup) failed, and **2** means PyBot could
+not be loaded or the options were wrong. Error messages are printed to normal
+output.
 
-## Python API
+Good to know:
+
+- SearxBot ignores any HTTP proxy set in your environment and connects to
+  SearXNG directly.
+- The timeout applies to each network step, not the whole search.
+- Responses larger than about 2 MB are refused.
+
+## Using SearxBot from Python
 
 ```python
 from searxbot import handle
@@ -102,31 +131,48 @@ result = handle("/search SearXNG documentation", memory)
 print(result["reply"])
 ```
 
-Use one `memory` dictionary per conversation and serialize turns in each
-conversation. Serialize PyBot calls across conversations because the runtime
-uses process-wide state. Make PyBot importable or pass its runtime as
-`runtime=pybot_runtime`. The returned record has `reply`, `source`, `module`,
-`candidates`, `search`, and `error` fields.
-`source` can be "search", "search_context", or "pybot". `search` holds retrieval metadata and
-results when available. A handled search
-failure has an `error` dictionary with `kind` and `message`. The lower-level
-`search()` function raises `SearchError` for those failures.
+Keep one `memory` dictionary per conversation and pass it to every call so
+follow-up questions work. Handle one message at a time per conversation. PyBot
+keeps shared state for the whole program, so if you run several conversations
+at once, don't call PyBot from more than one at a time.
 
-SearxBot dispatches search before PyBot's response hooks, so a search request is
-issued once per recognized turn. SearxBot displays engine-supplied snippets in
-SearXNG's order. Search stops at retrieval of the result list.
+PyBot must be importable, or you can pass it in yourself with
+`runtime=pybot_runtime`.
 
-## Tests
+`handle()` returns a dictionary with these keys:
+
+| Key | Meaning |
+| --- | --- |
+| `reply` | The text to show the user |
+| `source` | `"search"`, `"search_context"` (an answer about earlier results), or `"pybot"` |
+| `module` | Which PyBot module answered, if any |
+| `candidates` | PyBot's other possible replies |
+| `search` | The search details and results, when there are any |
+| `error` | `None`, or a dictionary with `kind` and `message` if the search failed |
+
+If you call the lower-level `search()` function directly, it raises
+`SearchError` instead of returning an error dictionary.
+
+SearxBot only lists what SearXNG returns, in SearXNG's order. It does not open
+the result pages, summarize them, or check them. Search requests are handled
+before PyBot sees the message, so each search is sent exactly once.
+
+## Running the tests
 
 ```sh
 python3 -B -W error::ResourceWarning -m unittest discover -s tests
+```
+
+The tests use fake responses and a temporary local server, so they need no
+internet access and no SearXNG. To include the PyBot chat tests, set
+`PYBOT_PATH`:
+
+```sh
 PYBOT_PATH=/path/to/pybot python3 -B -W error::ResourceWarning -m unittest discover -s tests
 ```
 
-The suite uses mock responses and disposable loopback servers. Set `PYBOT_PATH`
-to include PyBot chat integration tests.
+## Version and license
 
-## Releases and license
-
-Version 0.4.0. See [the changelog](CHANGELOG.md) for release history.
-SearxBot uses the [Apache License 2.0](LICENSE), the same license as PyBot.
+This is version 0.4.1. See the [changelog](CHANGELOG.md) for what changed in
+each release. SearxBot is released under the [Apache License 2.0](LICENSE), the
+same license as PyBot.
